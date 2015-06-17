@@ -1,1 +1,3 @@
-# readmissions
+# Readmissions
+Data on Medicare and Medicaid readmissions from the federal Center for Medicare and Medicare Services and the Illinois Department of Healthcare and Family Services, linked to data on racial composition of hospital patients and hospital payer mix from the Illinois Department of Public Health's Annual Hospital Questionnaire. Linking IDPH and Medicare data requires a crosswalk of IDPH hospital license numbers and Medicare IDs, which I created and stored here. 
+My goal is to link the the IDPH data with Medicare and Medicaid readmissions data, and eventually with other quality data like Hospital Acquired Conditions and Value-Based Purchasing measures. 
