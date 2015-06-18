@@ -1,0 +1,95 @@
+# link readmission penalty data from Medicaid and Medicare to patient racial and payer mix data from IDPH hospital surveys
+
+## ReadIDPH hospital profile worksheets into R
+
+##download from the url on the HFSRB website
+download.file("http://hfsrb.illinois.gov/pdf/AHQ%20Data%20File%202013.xls", destfile = "./data/HospProf2013.csv")
+
+## Read in only columns on race/ethnicity and hospital identifying info (ID, name, city, county), skip first row to get to headers 
+
+library(xlsx)
+
+race13 <- read.xlsx("./data/HospProf2013.csv", sheetName = "Hospital Utilization", startRow = 2, endRow = 218, colIndex = c(1, 3, 4, 7, 102:125), header = TRUE, colClasses = c(rep("character", 4), rep("numeric", 24)))
+
+## add new columns that calculate % black patients 
+race13$percBlack <- race13$Black.Patients/race13$Total.Patients.by.Race
+race13$percWhite <- race13$White.Patients/race13$Total.Patients.by.Race
+
+## subset columns we need for analysis
+blackWhite13 <- race13[ , c(1:4, 29,30)]
+
+## repeat for payer mix data in IDPH file
+## Read in only columns with payer mix data
+IPmix13 <- read.xlsx("./data/HospProf2013.csv", sheetName = "Patients by Payment Source", startRow = 2, endRow = 218, colIndex = c(1, 8:14), header = TRUE, colClasses = c("character", rep("numeric", 7)))
+
+## fix column headings from crap formatting
+colnames(IPmix13) <- c("Hospital ID", "Medicare", "Medicaid", "Other Public Payment", "Private Insurance", "Private Payment", "Charity Care", "Total Number of Inpatients")
+
+## add new columns that calculate payer mix rates and create subset for just Medicaid and Medicare rates
+
+IPmix13$MIUR <- IPmix13$Medicaid/IPmix13$Total.Number.of.Inpatients
+IPmix13$MedicareRate <- IPmix13$Medicare/IPmix13$Total.Number.of.Inpatients
+govPay13 <- IPmix13[ , c(1, 8, 9)]
+
+## merge race/ethnicity data with payer mix data on column 1, hospital ID
+racePayer <- merge(blackWhite13, govPay13, by.x = "Hospital.ID", by.y = "Hospital.ID")
+
+
+## download IDPH license # to Medicare ID crosswalk from @postess github
+
+url <- "https://raw.githubusercontent.com/postess/readmissions/master/data/IDPH%20to%20Medicare%20ID%20crosswalk.csv"
+download.file(url, destfile = "./data/IDPHxwalk.csv", method = "curl")
+xwalk <- read.csv("./data/IDPHxwalk.csv")
+
+## a little clean up
+crosswalk <- xwalk[ , c(1, 3, 4, 2)] ## reorder columns (hidden city column was a surprise...
+colnames(crosswalk) <- c("IDPH.ID", "Medicare.ID", "Hospital.Name", "Hospital.City") ## rename columns
+
+## add Medicare ID column to racePayer--match column 1 of IDPH dataset to Medicare ID to add Medicare ID column 
+crosswalk <- crosswalk[, c(1,2)]
+racePayer13X <- merge(racePayer, crosswalk, by.x = "Hospital.ID", by.y = "IDPH.ID")
+
+Readmits2013 <- racePayer13X[ , c(9, 1, 2:8)]
+
+## download Medicare readmissions data from @postess github (saved from zip file on CMS website)
+
+
+url <- "https://raw.githubusercontent.com/postess/readmissions/master/data/IllinoisMedicareReadmits2015.csv"
+download.file(url, destfile = "./data/CMSil2015.csv", method = "curl")
+CMS2015 <- read.csv("./data/CMSil2015.csv")
+CMS2015merge <- CMS2015[ ,1:2] # subset ID and readmission adjustment factor columns to prep for merge with race/payer mix table 
+
+## download Medicaid readmissions from @postess github
+url <- "https://raw.githubusercontent.com/postess/readmissions/master/data/ChiMedicaidReadmits2015.csv"
+download.file(url, destfile = "./data/ChiMedicaidReadmits2015.csv", method = "curl")
+HFS2015 <- read.csv("./data/ChiMedicaidReadmits2015.csv", colClasses = c("character", rep("numeric", 10)), na.strings = "-")
+HFS2015merge <- HFS2015[ , c(1, 11)] # subset ID and excess PPR columns to prep for merge with race/payer mix table 
+
+## merge race, payer mix and Medicare, -caid readmit data
+
+Readmits2013_Medicare <- merge(Readmits2013, CMS2015merge, by.x = "Hospital.ID", by.y = "PROV")
+Readmits2013_both <- merge(Readmits2013, HFS2015merge, by.x = "Hospital.ID", by.y = "Medicare_ID") 
+
+##look at it in Excel...
+write.xlsx(Readmits2013_both, "./data/ReadmitRacePayer.xlsx")
+
+## compare readmit rates by group (quartiles of MIUR and % black patients)
+
+Readmits2013_both$qBlack <- cut(Readmits2013_both$percBlack, breaks = quantile(Readmits2013_both$percBlack, c(0, .25, .5, .75, 1)), include.lowest = TRUE)
+MedicareRAbyBlackquartile <- aggregate(Readmits2013_both$Corrected.FY.2015..Readmissions.Adjustment.Factor, list(qBlack = Readmits2013_both$qBlack), FUN = mean) 
+
+Readmits2013_both$qMIUR <- cut(Readmits2013_both$MIUR, breaks = quantile(Readmits2013_both$MIUR, c(0, .25, .5, .75, 1)), include.lowest = TRUE)
+MedicareRAbyMIURquartile <- aggregate(Readmits2013_both$Corrected.FY.2015..Readmissions.Adjustment.Factor, list(qMIUR = Readmits2013_both$qMIUR), FUN = mean)
+
+MedicaidRAbyBlackquartile <- aggregate(Readmits2013_both$Excess_.Below._PPR_Target, list(qBlack = Readmits2013_both$qBlack), FUN = mean)
+MedicaidRAbyMIURquartile <- aggregate(Readmits2013_both$Excess_.Below._PPR_Target, list(qMIUR = Readmits2013_both$qMIUR), FUN = mean)
+
+## Medicaid readmit number is excess, which is too closely related to Medicaid volume to make comparisons based on MIUR mean much, so use actual over target%
+XIXtarget <- HFS2015[, c(1, 8)]
+readmits2013_Final <- merge(Readmits2013_both, XIXtarget, by.x = "Medicare.ID", by.y = "Medicare_ID")
+
+# re-calculate quartiles for Medicaid using % over/under target PPR instead of excess PPR, which gets confounded too much with Medicaid volume in quartile analysis
+MedicaidRaceQuartiles <- aggregate(readmits2013_Final$Actual_Over_Target_PPR_Rate_All, list(qBlack = readmits2013_Final$qBlack), FUN = median)
+MedicaidMIURquartile <- aggregate(readmits2013_Final$Actual_Over_Target_PPR_Rate_All, list(qMIUR = readmits2013_Final$qMIUR), FUN = median)
+
+## put in a policy brief and show it off!
